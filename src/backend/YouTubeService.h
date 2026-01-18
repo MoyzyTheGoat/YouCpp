@@ -2,7 +2,6 @@
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
-#include <QProcess>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -20,11 +19,9 @@ class YouTubeService : public QObject {
 public:
     explicit YouTubeService(QObject *parent = nullptr);
     void searchVideos(const QString &query);
-    void fetchTranscript(const QString &videoId);
 
 signals:
     void searchResultsReady(const QList<VideoResult> &results);
-    void transcriptReady(const QString &text);
     void errorOccurred(const QString &message);
 
 private slots:
@@ -33,6 +30,4 @@ private slots:
 private:
     QNetworkAccessManager *m_manager;
     QString m_apiKey;
-    
-    QString parseVttContent(const QString &rawText);
 };

@@ -29,5 +29,3 @@ target_link_libraries(YouCaptionCpp PRIVATE
     Qt6::WebEngineWidgets
 )
 
-# Handle resources (icons, styles)
-# qt_add_resources(...) 

@@ -96,7 +96,7 @@ void MainWindow::openInNewTab(QListWidgetItem *item) {
     int index = m_tabs->addTab(tw, title.left(15) + "...");
     m_tabs->setCurrentIndex(index);
 
-    m_service->fetchTranscript(videoId);
+
 }
 
 void MainWindow::performSearch() {
