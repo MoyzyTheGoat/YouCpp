@@ -1,6 +1,6 @@
 # YouCaption
 
-A sleek, modern desktop application for searching and watching YouTube videos at faster speeds to avoid unnecessary time consumption— built with C++ and Qt6.
+A sleek, modern desktop application for **consuming YouTube content faster** — built with C++ and Qt6.
 
 ![Qt](https://img.shields.io/badge/Qt-6.x-41CD52?logo=qt&logoColor=white)
 ![C++](https://img.shields.io/badge/C++-20-00599C?logo=cplusplus&logoColor=white)
@@ -8,13 +8,24 @@ A sleek, modern desktop application for searching and watching YouTube videos at
 
 ---
 
+## 🚀 Why YouCaption?
+
+YouTube limits playback speed to **2x** unless you pay for Premium. But let's be honest — most videos are packed with filler, long intros, and unnecessary padding. Why waste time?
+
+YouCaption lets you:
+- ⚡ **Watch at up to 5x speed** — bypass the 2x limit entirely
+- 🚫 **See virtually no ads** — embedded player avoids most YouTube ads
+- ⏱️ **Save hours** — cut through the fluff and get to the content that matters
+
+---
+
 ## ✨ Features
 
+- **Unrestricted Speed Control** — Adjust playback from 0.5x to 5.0x with presets and a fine-tuned slider
+- **Ad-Free Experience** — Privacy-enhanced embed mode minimizes ads
 - **YouTube Search** — Search for videos directly using the YouTube Data API
-- **Watch Videos** — Embedded video player with privacy-enhanced mode (youtube-nocookie.com)
-- **Playback Speed Control** — Adjust video speed from 0.5x to 5.0x with preset buttons and fine-tuned slider
-- **Tabbed Interface** — Open multiple videos in separate tabs for easy navigation
-- **Modern Dark UI** — Beautiful Catppuccin-inspired dark theme with glassmorphism effects
+- **Tabbed Interface** — Open multiple videos in separate tabs
+- **Modern Dark UI** — Beautiful Catppuccin-inspired theme with glassmorphism effects
 
 ---
 
