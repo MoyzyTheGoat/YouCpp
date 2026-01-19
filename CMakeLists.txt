@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(YouCaptionCpp VERSION 1.0 LANGUAGES CXX)
+project(YouCpp VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,11 +17,13 @@ set(PROJECT_SOURCES
     src/ui/TranscriptWindow.h
     src/backend/YouTubeService.cpp
     src/backend/YouTubeService.h
+    src/backend/GoogleAuth.cpp
+    src/backend/GoogleAuth.h
 )
 
-add_executable(YouCaptionCpp ${PROJECT_SOURCES})
+add_executable(YouCpp ${PROJECT_SOURCES})
 
-target_link_libraries(YouCaptionCpp PRIVATE
+target_link_libraries(YouCpp PRIVATE
     Qt6::Widgets
     Qt6::Network
     Qt6::Core

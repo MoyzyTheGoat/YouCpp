@@ -4,6 +4,40 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QWebEngineSettings>
+#include <QWebEngineProfile>
+#include <QRegularExpression>
+
+// Custom page to intercept navigation and open videos in embedded tabs
+class YouTubeHomePage : public QWebEnginePage {
+public:
+    YouTubeHomePage(MainWindow *mainWindow, QObject *parent = nullptr)
+        : QWebEnginePage(parent), m_mainWindow(mainWindow) {}
+
+protected:
+    bool acceptNavigationRequest(const QUrl &url, NavigationType type, bool isMainFrame) override {
+        QString urlStr = url.toString();
+        
+        // Check if this is a video URL
+        static QRegularExpression videoRegex(R"(/watch\?v=([a-zA-Z0-9_-]{11}))");
+        QRegularExpressionMatch match = videoRegex.match(urlStr);
+        
+        if (match.hasMatch() && type == NavigationTypeLinkClicked) {
+            QString videoId = match.captured(1);
+            // Extract title from URL or use video ID as fallback
+            QMetaObject::invokeMethod(m_mainWindow, "openVideoById",
+                Qt::QueuedConnection,
+                Q_ARG(QString, videoId),
+                Q_ARG(QString, QString("Video: %1").arg(videoId)));
+            return false; // Don't navigate, we're opening in a new tab
+        }
+        
+        return true; // Allow all other navigation
+    }
+
+private:
+    MainWindow *m_mainWindow;
+};
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_tabs = new QTabWidget(this);
@@ -13,7 +47,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
         QWidget* w = m_tabs->widget(index);
-        if (w != m_searchTab) { 
+        if (w != m_searchTab && w != m_youtubeHome) { 
             m_tabs->removeTab(index);
             w->deleteLater(); 
         }
@@ -21,6 +55,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     setCentralWidget(m_tabs);
 
+    // === YouTube Homepage Tab ===
+    m_youtubeHome = new QWebEngineView(this);
+    m_youtubeHome->settings()->setAttribute(QWebEngineSettings::JavascriptEnabled, true);
+    m_youtubeHome->settings()->setAttribute(QWebEngineSettings::PlaybackRequiresUserGesture, true);
+    
+    // Use custom page to intercept video clicks
+    YouTubeHomePage *homePage = new YouTubeHomePage(this, m_youtubeHome);
+    m_youtubeHome->setPage(homePage);
+    
+    // Set user agent for proper YouTube rendering
+    m_youtubeHome->page()->profile()->setHttpUserAgent(
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+    
+    // Load YouTube homepage
+    m_youtubeHome->setUrl(QUrl("https://www.youtube.com"));
+    m_tabs->addTab(m_youtubeHome, "YouTube");
+
+    // === Search Tab ===
     m_searchTab = new QWidget();
     m_searchTab->setObjectName("centralWidget");
     
@@ -91,12 +144,13 @@ void MainWindow::showContextMenu(const QPoint &pos) {
 void MainWindow::openInNewTab(QListWidgetItem *item) {
     QString videoId = item->data(Qt::UserRole).toString();
     QString title = item->data(Qt::UserRole + 1).toString();
+    openVideoById(videoId, title);
+}
 
+void MainWindow::openVideoById(const QString &videoId, const QString &title) {
     auto *tw = new TranscriptWindow(videoId, title, this);
     int index = m_tabs->addTab(tw, title.left(15) + "...");
     m_tabs->setCurrentIndex(index);
-
-
 }
 
 void MainWindow::performSearch() {
