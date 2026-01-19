@@ -4,40 +4,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QWebEngineSettings>
-#include <QWebEngineProfile>
-#include <QRegularExpression>
-
-// Custom page to intercept navigation and open videos in embedded tabs
-class YouTubeHomePage : public QWebEnginePage {
-public:
-    YouTubeHomePage(MainWindow *mainWindow, QObject *parent = nullptr)
-        : QWebEnginePage(parent), m_mainWindow(mainWindow) {}
-
-protected:
-    bool acceptNavigationRequest(const QUrl &url, NavigationType type, bool isMainFrame) override {
-        QString urlStr = url.toString();
-        
-        // Check if this is a video URL
-        static QRegularExpression videoRegex(R"(/watch\?v=([a-zA-Z0-9_-]{11}))");
-        QRegularExpressionMatch match = videoRegex.match(urlStr);
-        
-        if (match.hasMatch() && type == NavigationTypeLinkClicked) {
-            QString videoId = match.captured(1);
-            // Extract title from URL or use video ID as fallback
-            QMetaObject::invokeMethod(m_mainWindow, "openVideoById",
-                Qt::QueuedConnection,
-                Q_ARG(QString, videoId),
-                Q_ARG(QString, QString("Video: %1").arg(videoId)));
-            return false; // Don't navigate, we're opening in a new tab
-        }
-        
-        return true; // Allow all other navigation
-    }
-
-private:
-    MainWindow *m_mainWindow;
-};
+#include <cstdio>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_tabs = new QTabWidget(this);
@@ -47,7 +14,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
         QWidget* w = m_tabs->widget(index);
-        if (w != m_searchTab && w != m_youtubeHome) { 
+        if (w != m_searchTab && w != m_homeTab) { 
             m_tabs->removeTab(index);
             w->deleteLater(); 
         }
@@ -55,25 +22,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     setCentralWidget(m_tabs);
 
-    // === YouTube Homepage Tab ===
-    m_youtubeHome = new QWebEngineView(this);
-    m_youtubeHome->settings()->setAttribute(QWebEngineSettings::JavascriptEnabled, true);
-    m_youtubeHome->settings()->setAttribute(QWebEngineSettings::PlaybackRequiresUserGesture, true);
-    
-    // Use custom page to intercept video clicks
-    YouTubeHomePage *homePage = new YouTubeHomePage(this, m_youtubeHome);
-    m_youtubeHome->setPage(homePage);
-    
-    // Set user agent for proper YouTube rendering
-    m_youtubeHome->page()->profile()->setHttpUserAgent(
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    );
-    
-    // Load YouTube homepage
-    m_youtubeHome->setUrl(QUrl("https://www.youtube.com"));
-    m_tabs->addTab(m_youtubeHome, "YouTube");
+    m_auth = new GoogleAuth(this);
+    m_service = new YouTubeService(this);
 
-    // === Search Tab ===
+    QString clientId = qEnvironmentVariable("GOOGLE_CLIENT_ID");
+    QString clientSecret = qEnvironmentVariable("GOOGLE_CLIENT_SECRET");
+    m_auth->setCredentials(clientId, clientSecret);
+
+    setupHomeTab();
+    m_tabs->addTab(m_homeTab, "Home");
+
     m_searchTab = new QWidget();
     m_searchTab->setObjectName("centralWidget");
     
@@ -84,6 +42,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     QLabel *headerLabel = new QLabel("Search YouTube Videos", this);
     headerLabel->setStyleSheet("font-size: 22px; font-weight: 700; color: #cdd6f4; margin-bottom: 8px;");
     mainLayout->addWidget(headerLabel);
+    
     QHBoxLayout *searchLayout = new QHBoxLayout();
     searchLayout->setSpacing(12);
     
@@ -117,34 +76,330 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     m_tabs->addTab(m_searchTab, "Search");
 
-    m_service = new YouTubeService(this);
-
     connect(m_searchInput, &QLineEdit::returnPressed, this, &MainWindow::performSearch);
     connect(m_searchBtn, &QPushButton::clicked, this, &MainWindow::performSearch);
-    connect(m_videoList, &QListWidget::itemClicked, this, &MainWindow::openInNewTab);
+    connect(m_videoList, &QListWidget::itemClicked, this, &MainWindow::openVideoFromItem);
     connect(m_videoList, &QListWidget::customContextMenuRequested, this, &MainWindow::showContextMenu);
+    
     connect(m_service, &YouTubeService::searchResultsReady, this, &MainWindow::handleSearchResults);
+    connect(m_service, &YouTubeService::subscriptionFeedReady, this, &MainWindow::handleSubscriptionFeed);
+    connect(m_service, &YouTubeService::recommendationsReady, this, &MainWindow::handleRecommendations);
     connect(m_service, &YouTubeService::errorOccurred, this, &MainWindow::showError);
+    
+    connect(m_auth, &GoogleAuth::authenticated, this, &MainWindow::onAuthenticated);
+    connect(m_auth, &GoogleAuth::authenticationFailed, this, &MainWindow::onAuthFailed);
+    connect(m_auth, &GoogleAuth::loggedOut, this, &MainWindow::onLoggedOut);
 
-    setWindowTitle("YouCaption - YouTube Caption Viewer");
+    setWindowTitle("YouCpp - YouTube Video Player");
     resize(1100, 850);
     setMinimumSize(800, 600);
+    
+
+    if (m_auth->isAuthenticated()) {
+        onAuthenticated();
+    }
+}
+
+class VideoCard : public QWidget {
+public:
+    VideoCard(const QString &title, const QString &channel, QWidget *parent = nullptr) : QWidget(parent) {
+        QVBoxLayout *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(4, 4, 4, 4); 
+        layout->setSpacing(0);
+
+        QWidget *card = new QWidget(this);
+        card->setStyleSheet(R"(
+            QWidget {
+                background-color: #232433; /* Darker background for contrast */
+                border-radius: 12px;
+            }
+        )");
+        QVBoxLayout *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(0, 0, 0, 12);
+        cardLayout->setSpacing(8);
+
+        m_thumbnail = new QLabel(card);
+        m_thumbnail->setFixedSize(300, 169); 
+        m_thumbnail->setStyleSheet("background-color: #11111b; border-top-left-radius: 12px; border-top-right-radius: 12px; border-bottom-left-radius: 0; border-bottom-right-radius: 0;");
+        m_thumbnail->setAlignment(Qt::AlignCenter);
+        m_thumbnail->setScaledContents(true); 
+        
+        m_title = new QLabel(title, card);
+        m_title->setWordWrap(true);
+        m_title->setStyleSheet("font-weight: 700; font-size: 15px; color: #ffffff; padding: 0 12px; background: transparent;");
+        m_title->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+        m_title->setFixedHeight(45);
+        
+        m_channel = new QLabel(channel, card);
+        m_channel->setStyleSheet("font-size: 13px; color: #bac2de; padding: 0 12px; background: transparent; font-weight: 500;");
+        m_channel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+
+        cardLayout->addWidget(m_thumbnail);
+        cardLayout->addWidget(m_title);
+        cardLayout->addWidget(m_channel);
+        cardLayout->addStretch();
+        
+        layout->addWidget(card);
+        
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+    
+    void setThumbnail(const QPixmap &pixmap) {
+        if (!pixmap.isNull()) {
+             m_thumbnail->setPixmap(pixmap.scaled(m_thumbnail->size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
+        }
+    }
+
+private:
+    QLabel *m_thumbnail;
+    QLabel *m_title;
+    QLabel *m_channel;
+};
+
+void MainWindow::setupHomeTab() {
+    m_homeTab = new QWidget();
+    m_homeTab->setObjectName("centralWidget");
+    
+    QVBoxLayout *layout = new QVBoxLayout(m_homeTab);
+    layout->setContentsMargins(32, 28, 32, 28);
+    layout->setSpacing(20);
+    
+    QHBoxLayout *headerLayout = new QHBoxLayout();
+    
+    QLabel *titleLabel = new QLabel("Your Feed", this);
+    titleLabel->setStyleSheet("font-size: 22px; font-weight: 700; color: #cdd6f4;");
+    headerLayout->addWidget(titleLabel);
+    
+    headerLayout->addStretch();
+    
+    m_authStatusLabel = new QLabel("Not signed in", this);
+    m_authStatusLabel->setStyleSheet("font-size: 13px; color: #a6adc8;");
+    headerLayout->addWidget(m_authStatusLabel);
+    
+    m_signInBtn = new QPushButton("Sign In with Google", this);
+    m_signInBtn->setObjectName("searchBtn");
+    m_signInBtn->setMinimumHeight(40);
+    m_signInBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_signInBtn, &QPushButton::clicked, this, &MainWindow::onSignInClicked);
+    headerLayout->addWidget(m_signInBtn);
+    
+    m_signOutBtn = new QPushButton("Sign Out", this);
+    m_signOutBtn->setMinimumHeight(40);
+    m_signOutBtn->setCursor(Qt::PointingHandCursor);
+    m_signOutBtn->setStyleSheet(R"(
+        QPushButton {
+            background: #45475a;
+            color: #cdd6f4;
+            border: none;
+            border-radius: 10px;
+            padding: 8px 16px;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background: #585b70;
+        }
+    )");
+    m_signOutBtn->hide();
+    connect(m_signOutBtn, &QPushButton::clicked, m_auth, &GoogleAuth::logout);
+    headerLayout->addWidget(m_signOutBtn);
+    
+    layout->addLayout(headerLayout);
+    
+    m_homeStack = new QStackedWidget(this);
+    
+    // Sign-in page
+    m_signInPage = new QWidget();
+    QVBoxLayout *signInLayout = new QVBoxLayout(m_signInPage);
+    signInLayout->addStretch();
+    
+    QLabel *signInPrompt = new QLabel("Sign in to see your personalized feed", this);
+    signInPrompt->setStyleSheet("font-size: 18px; color: #a6adc8;");
+    signInPrompt->setAlignment(Qt::AlignCenter);
+    signInLayout->addWidget(signInPrompt);
+    
+    QLabel *signInNote = new QLabel("Your subscriptions and recommendations will appear here", this);
+    signInNote->setStyleSheet("font-size: 14px; color: #6c7086;");
+    signInNote->setAlignment(Qt::AlignCenter);
+    signInLayout->addWidget(signInNote);
+    
+    signInLayout->addStretch();
+    m_homeStack->addWidget(m_signInPage);
+    
+    m_feedPage = new QWidget();
+    QVBoxLayout *feedLayout = new QVBoxLayout(m_feedPage);
+    feedLayout->setContentsMargins(0, 0, 0, 0);
+    
+    m_feedList = new QListWidget(this);
+    m_feedList->setViewMode(QListWidget::IconMode);
+    m_feedList->setResizeMode(QListWidget::Adjust);
+    m_feedList->setMovement(QListView::Static);
+    m_feedList->setSpacing(16); 
+    m_feedList->setUniformItemSizes(true);
+    m_feedList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_feedList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); 
+    m_feedList->setFrameShape(QFrame::NoFrame);
+    m_feedList->setSelectionMode(QAbstractItemView::NoSelection); 
+    m_feedList->setStyleSheet("QListWidget { background: transparent; padding: 10px; } QListWidget::item { background: transparent; } QListWidget::item:hover { background: transparent; }");
+    m_feedList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_feedList, &QListWidget::itemClicked, this, &MainWindow::openVideoFromItem);
+    connect(m_feedList, &QListWidget::customContextMenuRequested, this, &MainWindow::showContextMenu);
+    
+    feedLayout->addWidget(m_feedList);
+    m_homeStack->addWidget(m_feedPage);
+    
+    layout->addWidget(m_homeStack, 1);
+    
+    m_homeStack->setCurrentWidget(m_signInPage);
+}
+
+void MainWindow::updateAuthUI() {
+    if (m_auth->isAuthenticated()) {
+        m_authStatusLabel->setText("Signed in");
+        m_authStatusLabel->setStyleSheet("font-size: 13px; color: #a6e3a1;");
+        m_signInBtn->hide();
+        m_signOutBtn->show();
+        m_homeStack->setCurrentWidget(m_feedPage);
+    } else {
+        m_authStatusLabel->setText("Not signed in");
+        m_authStatusLabel->setStyleSheet("font-size: 13px; color: #a6adc8;");
+        m_signInBtn->show();
+        m_signOutBtn->hide();
+        m_homeStack->setCurrentWidget(m_signInPage);
+        m_feedList->clear();
+    }
+}
+
+void MainWindow::onSignInClicked() {
+    printf("[YouCpp] Sign-in button clicked\n");
+    fflush(stdout);
+    m_signInBtn->setEnabled(false);
+    m_signInBtn->setText("Signing in...");
+    m_auth->startLogin();
+}
+
+void MainWindow::onAuthenticated() {
+    printf("[YouCpp] Authentication successful!\n");
+    fflush(stdout);
+    m_signInBtn->setEnabled(true);
+    m_signInBtn->setText("Sign In with Google");
+    
+    m_service->setAccessToken(m_auth->accessToken());
+    updateAuthUI();
+    
+    // Fetch personalized content
+    printf("[YouCpp] Fetching subscription feed...\n");
+    fflush(stdout);
+    m_feedList->clear();
+    QListWidgetItem *loadingItem = new QListWidgetItem("Loading your feed...", m_feedList);
+    loadingItem->setFlags(loadingItem->flags() & ~Qt::ItemIsSelectable);
+    loadingItem->setTextAlignment(Qt::AlignCenter);
+    loadingItem->setForeground(QColor("#a6adc8"));
+    
+    m_service->fetchSubscriptionsFeed();
+}
+
+void MainWindow::onAuthFailed(const QString &error) {
+    printf("[YouCpp] Authentication FAILED: %s\n", error.toUtf8().constData());
+    fflush(stdout);
+    m_signInBtn->setEnabled(true);
+    m_signInBtn->setText("Sign In with Google");
+    QMessageBox::warning(this, "Authentication Failed", error);
+}
+
+void MainWindow::onLoggedOut() {
+    updateAuthUI();
+}
+
+void MainWindow::handleSubscriptionFeed(const QList<VideoResult> &results) {
+    populateVideoList(m_feedList, results);
+}
+
+void MainWindow::handleRecommendations(const QList<VideoResult> &results) {
+    populateVideoList(m_feedList, results);
+}
+
+void MainWindow::populateVideoList(QListWidget *list, const QList<VideoResult> &results) {
+    list->clear();
+    
+    if (results.isEmpty()) {
+        QListWidgetItem *emptyItem = new QListWidgetItem("No videos found", list);
+        emptyItem->setSizeHint(QSize(200, 50));
+        emptyItem->setFlags(emptyItem->flags() & ~Qt::ItemIsSelectable);
+        emptyItem->setTextAlignment(Qt::AlignCenter);
+        emptyItem->setForeground(QColor("#a6adc8"));
+        return;
+    }
+    
+    for (const auto &vid : results) {
+        QListWidgetItem *item = new QListWidgetItem(list);
+        
+        item->setSizeHint(QSize(310, 270)); 
+        
+        VideoCard *cardWidget = new VideoCard(vid.title, vid.channel, list);
+        list->setItemWidget(item, cardWidget);
+        
+        item->setData(Qt::UserRole, vid.id);
+        item->setData(Qt::UserRole + 1, vid.title);
+        item->setData(Qt::UserRole + 2, vid.channel);
+        item->setData(Qt::UserRole + 3, vid.channelId);
+        item->setToolTip(QString("Click to watch: %1").arg(vid.title));
+        
+        QNetworkAccessManager *net = new QNetworkAccessManager(this);
+        QNetworkReply *reply = net->get(QNetworkRequest(QUrl(vid.thumbnailUrl)));
+        connect(reply, &QNetworkReply::finished, [reply, cardWidget, net]() {
+            if (reply->error() == QNetworkReply::NoError) {
+                QPixmap pixmap;
+                pixmap.loadFromData(reply->readAll());
+                cardWidget->setThumbnail(pixmap);
+            }
+            reply->deleteLater();
+            net->deleteLater();
+        });
+    }
 }
 
 void MainWindow::showContextMenu(const QPoint &pos) {
-    QListWidgetItem *item = m_videoList->itemAt(pos);
+    QListWidget *list = qobject_cast<QListWidget*>(sender());
+    if (!list) return;
+
+    QListWidgetItem *item = list->itemAt(pos);
     if (!item) return;
 
     QMenu menu(this);
     QAction *openAction = menu.addAction("Open in New Tab");
-    connect(openAction, &QAction::triggered, [this, item]() { openInNewTab(item); });
-    menu.exec(m_videoList->mapToGlobal(pos));
+    connect(openAction, &QAction::triggered, [this, item]() { openVideoFromItem(item); });
+    
+    QString channelId = item->data(Qt::UserRole + 3).toString();
+    QString channelName = item->data(Qt::UserRole + 2).toString();
+    
+    if (!channelId.isEmpty()) {
+        menu.addSeparator();
+        QAction *muteAction = menu.addAction("Mute Channel '" + channelName + "'");
+        connect(muteAction, &QAction::triggered, [this, channelId, channelName]() {
+            m_service->muteChannel(channelId, channelName);
+            
+            QMessageBox::information(this, "Channel Muted", 
+                QString("Channel '%1' has been muted.\n\nVideos from this channel will no longer appear in your feed.").arg(channelName));
+                
+            if (m_auth->isAuthenticated()) {
+                m_feedList->clear();
+                QListWidgetItem *loadingItem = new QListWidgetItem("Refreshing feed...", m_feedList);
+                loadingItem->setTextAlignment(Qt::AlignCenter);
+                loadingItem->setForeground(QColor("#a6adc8"));
+                m_service->fetchSubscriptionsFeed(); 
+            }
+        });
+    }
+    
+    menu.exec(list->mapToGlobal(pos));
 }
 
-void MainWindow::openInNewTab(QListWidgetItem *item) {
+void MainWindow::openVideoFromItem(QListWidgetItem *item) {
     QString videoId = item->data(Qt::UserRole).toString();
     QString title = item->data(Qt::UserRole + 1).toString();
-    openVideoById(videoId, title);
+    if (!videoId.isEmpty()) {
+        openVideoById(videoId, title);
+    }
 }
 
 void MainWindow::openVideoById(const QString &videoId, const QString &title) {
@@ -166,27 +421,7 @@ void MainWindow::performSearch() {
 void MainWindow::handleSearchResults(const QList<VideoResult> &results) {
     m_searchBtn->setText("Search");
     m_searchBtn->setEnabled(true);
-    
-    if (results.isEmpty()) {
-        QListWidgetItem *emptyItem = new QListWidgetItem(m_videoList);
-        emptyItem->setText("No videos found. Try a different search term.");
-        emptyItem->setFlags(emptyItem->flags() & ~Qt::ItemIsSelectable);
-        emptyItem->setTextAlignment(Qt::AlignCenter);
-        emptyItem->setForeground(QColor("#a6adc8"));
-        return;
-    }
-    
-    for (const auto &vid : results) {
-        QListWidgetItem *item = new QListWidgetItem(m_videoList);
-        QString displayText = QString("%1\n%2").arg(vid.title, vid.channel);
-        item->setText(displayText);
-        item->setForeground(QColor("#cdd6f4"));
-        item->setData(Qt::UserRole, vid.id); 
-        item->setData(Qt::UserRole + 1, vid.title); 
-        item->setData(Qt::UserRole + 2, vid.channel);
-        item->setToolTip(QString("Click to watch: %1").arg(vid.title));
-        fetchThumbnail(vid.thumbnailUrl, item);
-    }
+    populateVideoList(m_videoList, results);
 }
 
 void MainWindow::fetchThumbnail(const QString &url, QListWidgetItem *item) {

@@ -31,8 +31,12 @@ void loadEnv() {
 #include <QApplication>
 #include "ui/MainWindow.h"
 #include <QFontDatabase>
+#include <cstdio>
 
 int main(int argc, char *argv[]) {
+    printf("[YouCpp] Starting application...\n");
+    fflush(stdout);
+    
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS", 
             "--no-sandbox "
             "--autoplay-policy=no-user-gesture-required "
